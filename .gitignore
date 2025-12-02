@@ -1,0 +1,11 @@
+# Ignorer tout le dossier de données créé par R
+meps_data/
+
+# Sécurité supplémentaire : ignorer tous les zip et dta du projet
+*.zip
+*.dta
+
+# Ignorer les fichiers temporaires de R et Python
+.Rhistory
+.RData
+__pycache__/
