@@ -66,6 +66,9 @@ load_meps_zip(urls, zipnames, objnames)
 # individu (variable exp_poste_total)
 
 # Les cinq premiers fichiers sont traités de façon analogue
+%%R
+library(dplyr)
+library(tidyr)
 
 # Fonction générique pour agréger les dépenses par saison
 aggregate_by_season <- function(data, date_col, exp_col, prefix) {
@@ -149,7 +152,7 @@ agg_home <- aggregate_by_season(
   prefix = "exp_home_"
 )
 
-# Repartition uniforme ----
+# Other ----
 seasons_list <- c("winter", "spring", "summer", "fall")
 
 
@@ -172,6 +175,8 @@ aggregate_uniform_seasonal <- function(data, exp_col, prefix) {
       exp_final = sum(exp_seasonal, na.rm = TRUE), 
       .groups = "drop"
     )
+  
+  
   
   # Calcul de la dépense par saison et la dépense totale pour chaque individu
   agg_data <- seasonal_data %>%
@@ -272,3 +277,107 @@ agg_hospital <- hospitals_seasonal %>%
   ) %>%
   ungroup()
 
+
+#  Join ----
+# Les variables précédemment créées détaillant les dépenses agrégées par poste
+# pour chaque individu sont jointes aux fichiers full_year_2022 et longitudinal
+# pour inclure certaines caractéristiques socio-démographiques et économiques à l'étude.
+
+# DUPERSID présents dans hospitals_2022 mais supprimés dans agg_hospitals
+# (du fait de l'absence de l'information sur la durée d'hospitalisation)
+ids_removed <- hospitals_2022 %>%
+  filter(IPENDMM == -8 ) %>%
+  pull(DUPERSID)
+
+
+# CRéation du dataframe avec l'ensemble des dépenses mensuelles par postes
+# et les caractéristiques socio-démographiques et économiques
+all_expenses <- full_year_2022 %>%
+  filter(!DUPERSID %in% ids_removed)  %>%
+  select(DUPERSID,  EDUCYR,  TTLP22X, FAMINC22, AGE22X, TOTEXP22  ) %>%
+  left_join(full_year_2023 %>% select(DUPERSID,  TOTEXP23), by= "DUPERSID") %>%
+  left_join(longitudinal %>% select(DUPERSID), by= "DUPERSID")%>%
+  left_join(agg_dental, by="DUPERSID") %>%
+  left_join(agg_hospital, by="DUPERSID") %>%
+  left_join(agg_outpatient, by="DUPERSID") %>%
+  left_join(agg_office, by="DUPERSID") %>%
+  left_join(agg_er, by="DUPERSID") %>%
+  left_join(agg_home, by="DUPERSID") %>%
+  left_join(agg_others, by="DUPERSID") %>%
+  left_join(agg_medicines, by="DUPERSID")
+
+# Etude des valeurs négatives
+table(all_expenses$EDUCYR)
+na_educ <- all_expenses %>% filter(EDUCYR <0)
+table(na_educ$AGE22X)
+# Il semblerait que cela soit des jeunes
+young <- all_expenses %>% filter(0<= AGE22X & AGE22X < 9)
+table(young$AGE22X)
+young_educ <- young %>% filter(EDUCYR>=0)
+table(young_educ$AGE22X)
+
+
+all_expenses_clean <- all_expenses %>% mutate(
+  EDUCYR = ifelse( EDUCYR <0, 0, EDUCYR)
+)
+
+library(ggplot2)
+plot_data <- all_expenses %>%
+  mutate(
+    EDUCYR_status = case_when(
+      EDUCYR < 0 ~ "EDUCYR Négatif/Inconnu",
+      EDUCYR == 0 ~ "EDUCYR = 0 (Aucune éducation)",
+      EDUCYR > 0 ~ "EDUCYR Positif",
+      TRUE ~ "NA"
+    ),
+    Age_Group = ifelse(AGE22X < 9, "Très Jeune (0-8 ans)", "Adultes et Enfants (9+ ans)")
+  ) %>%
+  # On filtre pour les groupes pertinents
+  filter(EDUCYR_status != "NA")
+
+density_data <- all_expenses %>%
+  # Limiter l'analyse aux individus de moins de 18 ans
+  filter(AGE22X < 18) %>% 
+  mutate(
+    EDUCYR_status = ifelse(EDUCYR < 0, "EDUCYR Négatif/Inconnu", "EDUCYR Non-Négatif (>= 0)")
+  )
+
+%%R
+# Graphique de densité pour comparer les distributions d'âge
+ggplot(density_data, aes(x = AGE22X, fill = EDUCYR_status)) +
+  geom_density(alpha = 0.5, adjust = 1) + # adjust=1 pour lisser l'estimation de densité
+  scale_fill_manual(values = c("EDUCYR Négatif/Inconnu" = "#E41A1C", 
+                               "EDUCYR Non-Négatif (>= 0)" = "#377EB8")) +
+  labs(
+    title = "Comparaison de la Distribution d'Âge (Moins de 18 ans)",
+    subtitle = "EDUCYR Négatif (Cas à imputer à 0) vs. EDUCYR Non-Négatif",
+    x = "Âge en 2022 (AGE22X)",
+    y = "Densité",
+    fill = "Statut de EDUCYR"
+  ) +
+  theme_minimal()
+
+
+
+cat("\n Nombre de lignes total \n")
+print(nrow(all_expenses_clean))
+cat("\n Nombre de lignes avec revenu négatif \n")
+print(nrow(all_expenses_clean %>% filter(TTLP22X <0 | FAMINC22 <0)))
+cat("\n Nombre de lignes sans donnée d'âge \n")
+print(nrow(all_expenses_clean %>% filter(AGE22X <0)))
+
+
+all_expenses_clean <- all_expenses_clean %>% 
+  filter(TTLP22X >=0 & FAMINC22 >=0 & AGE22X >=0)
+
+
+# On met des 0 aux dépenses NA
+library(stringr)
+all_expense_cols <- names(all_expenses_clean) %>% 
+  str_subset("^exp_")
+all_expenses_clean <- all_expenses_clean %>%
+  mutate(across(all_of(all_expense_cols), ~ replace_na(.x, 0)))
+
+
+
+write.csv(all_expenses_clean, "all_expenses_saison.csv", row.names = FALSE)
