@@ -101,7 +101,8 @@ df_modele_depenses <- all_expenses_clean %>%
   # 1. Sélection des colonnes essentielles
   select(
     DUPERSID, 
-    TOTEXP22, # Variable cible pour le total des dépenses
+    TOTEXP22, # Variable cible pour le total des dépenses,
+    TOTEXP23,
     TTLP22X, # Revenu total du foyer (si pertinent pour le modèle)
     FAMINC22, # Revenu familial (si pertinent pour le modèle)
     AGE22X, # Âge

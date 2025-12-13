@@ -376,8 +376,8 @@ library(stringr)
 all_expense_cols <- names(all_expenses_clean) %>% 
   str_subset("^exp_")
 all_expenses_clean <- all_expenses_clean %>%
-  mutate(across(all_of(all_expense_cols), ~ replace_na(.x, 0)))
-
+  mutate(across(all_of(all_expense_cols), ~ replace_na(.x, 0))) %>% 
+  mutate(TOTEXP23 = replace_na(TOTEXP23, 0))
 
 
 write.csv(all_expenses_clean, "all_expenses_saison.csv", row.names = FALSE)
