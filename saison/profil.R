@@ -3,8 +3,8 @@
 create_cost_profile <- function(
     df, 
     cost_col, 
-    low_cost_threshold = 1/3, 
-    moderate_cost_threshold = 2/3
+    low_cost_threshold = 0.2, 
+    moderate_cost_threshold = 0.4
 ) {
   
   # Assurez-vous que la colonne de coût est un symbole pour la manipulation dplyr
@@ -62,7 +62,7 @@ all_expenses_with_profile <- create_cost_profile(
 # Vérification (la distribution devrait être de 20%, 20%, 60%)
 cat("\nDistribution des individus par Profil de Coût:\n")
 print(table(all_expenses_with_profile$profil_label))
-write.csv(all_expenses_with_profile, "all_expenses_saison_profil.csv", row.names = FALSE)
+write.csv(all_expenses_with_profile, "saison/all_expenses_saison_profil.csv", row.names = FALSE)
 
 
 # Cas agrege
@@ -75,4 +75,4 @@ agg_expenses_with_profile <- create_cost_profile(
 # Vérification (la distribution devrait être de 20%, 20%, 60%)
 cat("\nDistribution des individus par Profil de Coût:\n")
 print(table(agg_expenses_with_profile$profil_label))
-write.csv(agg_expenses_with_profile, "all_expenses_agrege_profil.csv", row.names = FALSE)
+write.csv(agg_expenses_with_profile, "saison/all_expenses_agrege_profil.csv", row.names = FALSE)

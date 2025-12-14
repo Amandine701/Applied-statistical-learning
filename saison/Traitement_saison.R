@@ -2,7 +2,7 @@ library(haven)
 library(dplyr)
 library(tidyr)
 library(readr)
-
+# 
 
 load_meps_zip <- function(urls, zipnames, objnames, outdir = "meps_data") {
   
@@ -53,9 +53,37 @@ objnames <- c("full_year_2022", "longitudinal", "full_year_2023",
               "hospitals_2022", "emergency_room_2022", "outpatients_visits_2022",
               "Office_Based_Medical_Provider_2022", "home_health_2022")
 
-load_meps_zip(urls, zipnames, objnames)
+#load_meps_zip(urls, zipnames, objnames)
 
 
+setwd("~/work/Applied-statistical-learning/")
+local <- c(
+  "meps_data/h243/h243dta.zip",
+  "meps_data/h252/h252dta.zip",
+  "meps_data/h251/h251dta.zip",
+  "meps_data/h239a/h239adta.zip",
+  "meps_data/h239b/h239bdta.zip",
+  "meps_data/h239c/h239cdta.zip",
+  "meps_data/h239d/h239ddta.zip",
+  "meps_data/h239e/h239edta.zip",
+  "meps_data/h239f/h239fdta.zip",
+  "meps_data/h239g/h239gdta.zip",
+  "meps_data/h239h/h239hdta.zip"
+)
+  for (i in seq_along(local)) {
+    url      <- urls[i]
+    zipfile  <- file.path("meps_data", zipnames[i])
+    objname  <- objnames[i]
+    
+    #  Décompression et extraction du fichier .dta
+    unzip_dir <- file.path("meps_data", tools::file_path_sans_ext(zipnames[i]))
+    dir.create(unzip_dir, showWarnings = FALSE)
+    unzip(zipfile, exdir = unzip_dir)
+    dta_file <- list.files(unzip_dir, pattern = "\\.dta$", full.names = TRUE)
+    
+    # Nous téléchargeons le fichier .dta et le renommons
+    assign(objname, read_dta(dta_file), envir = .GlobalEnv)
+  }
 
 
 # Nous agrégeons les dépenses pour chaque individu et pour chaque mois
@@ -66,7 +94,6 @@ load_meps_zip(urls, zipnames, objnames)
 # individu (variable exp_poste_total)
 
 # Les cinq premiers fichiers sont traités de façon analogue
-%%R
 library(dplyr)
 library(tidyr)
 
@@ -278,6 +305,14 @@ agg_hospital <- hospitals_seasonal %>%
   ungroup()
 
 
+
+
+
+
+
+
+
+
 #  Join ----
 # Les variables précédemment créées détaillant les dépenses agrégées par poste
 # pour chaque individu sont jointes aux fichiers full_year_2022 et longitudinal
@@ -306,7 +341,70 @@ all_expenses <- full_year_2022 %>%
   left_join(agg_others, by="DUPERSID") %>%
   left_join(agg_medicines, by="DUPERSID")
 
-# Etude des valeurs négatives
+
+# Ajout de variables ----
+# Agrégation des dépenses totales par saison ---
+# Nous créons des variables dépenses totales saisonnières (dep_winter, dep_spring...)
+# en sommant toutes les sous-catégories (dental, hospital, etc.) pour chaque saison.
+
+all_expenses <- all_expenses %>%
+  rowwise() %>%
+  mutate(
+    # On utilise matches pour attraper tout ce qui finit par _winter, etc.
+    dep_winter = sum(c_across(matches("_winter$")), na.rm = TRUE),
+    dep_spring = sum(c_across(matches("_spring$")), na.rm = TRUE),
+    dep_summer = sum(c_across(matches("_summer$")), na.rm = TRUE),
+    dep_fall   = sum(c_across(matches("_fall$")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Liste des variables de dépenses saisonnières pour utilisation ultérieure
+dep_seasons <- c("dep_winter", "dep_spring", "dep_summer", "dep_fall")
+
+
+# Nous créons d'autres variables utiles pour notre étude :
+# - Les dépenses des 2 dernières saisons (été + automne, équivalent 6 mois)
+# - Nombre de saisons où la dépense est supérieure à la moyenne saisonnière
+# - Variable tendance (pente de la régression sur les 4 saisons)
+# - Variable ep_aigue (pic de dépense)
+
+all_expenses <- all_expenses %>%
+  rowwise() %>%
+  mutate(
+    
+    # Dépenses des 2 dernières saisons (Summer + Fall) ~ équivalent des "6 derniers mois"
+    dep_last_2_seasons = sum(dep_summer, dep_fall, na.rm = TRUE),
+    
+    # Dépenses de la dernière saison (Fall) ~ indicateur le plus récent
+    dep_last_season = dep_fall,
+    
+    # calcul du nombre de saisons dont la dépense dépasse la moyenne saisonnière (Total / 4)
+    nbre_au_dessus_moyenne = sum(c_across(all_of(dep_seasons)) > (TOTEXP22 / 4), na.rm = TRUE),
+    
+    # Dépense saisonnière maximale
+    dep_max = max(c_across(all_of(dep_seasons)), na.rm = TRUE),
+    
+    # Création d'une variable tendance obtenue en ajustant une droite sur les 4 saisons
+    # Si la pente est positive, les dépenses accélèrent en fin d'année.
+    tendance = {
+      # x = temps (1=Hiver, 2=Printemps, 3=Eté, 4=Automne)
+      temps <- 1:4
+      dep_saisonnieres <- c(dep_winter, dep_spring, dep_summer, dep_fall)
+      
+      # Calcul de la pente (coefficients[2]) de la régression linéaire
+      # On gère le cas où toutes les dépenses sont 0 pour éviter les erreurs
+      if(all(dep_saisonnieres == 0)) 0 else lm(dep_saisonnieres ~ temps)$coefficients[2]
+    },
+    
+    # Indique si la dépense saisonnière la plus élevée est "anormalement" haute.
+    # Un facteur 2.5 par rapport à la moyenne saisonnière est un bon indicateur de choc.
+    ep_aigue = if_else(dep_max > 2.5 * (TOTEXP22 / 4), 1, 0)
+    
+  ) %>%
+  ungroup()
+
+
+# Etude des valeurs négatives ----
 table(all_expenses$EDUCYR)
 na_educ <- all_expenses %>% filter(EDUCYR <0)
 table(na_educ$AGE22X)
@@ -342,7 +440,7 @@ density_data <- all_expenses %>%
     EDUCYR_status = ifelse(EDUCYR < 0, "EDUCYR Négatif/Inconnu", "EDUCYR Non-Négatif (>= 0)")
   )
 
-%%R
+
 # Graphique de densité pour comparer les distributions d'âge
 ggplot(density_data, aes(x = AGE22X, fill = EDUCYR_status)) +
   geom_density(alpha = 0.5, adjust = 1) + # adjust=1 pour lisser l'estimation de densité
@@ -371,13 +469,26 @@ all_expenses_clean <- all_expenses_clean %>%
   filter(TTLP22X >=0 & FAMINC22 >=0 & AGE22X >=0)
 
 
-# On met des 0 aux dépenses NA
+# On met des 0 aux dépenses NA ou négatives (pour les dépenses home)
 library(stringr)
 all_expense_cols <- names(all_expenses_clean) %>% 
   str_subset("^exp_")
+home_expense_cols <- names(all_expenses_clean) %>% 
+  str_subset("^exp_home")
+dep_cols <- names(all_expenses_clean) %>% 
+  str_subset("^dep")
+
 all_expenses_clean <- all_expenses_clean %>%
   mutate(across(all_of(all_expense_cols), ~ replace_na(.x, 0))) %>% 
-  mutate(TOTEXP23 = replace_na(TOTEXP23, 0))
+  mutate(TOTEXP23 = replace_na(TOTEXP23, 0)) %>% 
+  mutate(across(all_of(home_expense_cols), ~ pmax(.x, 0))) %>% 
+  mutate(across(all_of(dep_cols), ~ pmax(.x, 0)))
 
 
-write.csv(all_expenses_clean, "all_expenses_saison.csv", row.names = FALSE)
+summary(all_expenses_clean)
+
+
+
+
+
+write.csv(all_expenses_clean, "saison/all_expenses_saison.csv", row.names = FALSE)

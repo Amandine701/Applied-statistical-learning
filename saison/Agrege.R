@@ -127,4 +127,4 @@ print(head(df_modele_depenses))
 print(names(df_modele_depenses))
 
 
-write.csv(df_modele_depenses, "all_expenses_agrege.csv", row.names = FALSE)
+write.csv(df_modele_depenses, "saison/all_expenses_agrege.csv", row.names = FALSE)
