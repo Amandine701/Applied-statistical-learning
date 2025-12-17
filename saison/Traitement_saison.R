@@ -2,7 +2,8 @@ library(haven)
 library(dplyr)
 library(tidyr)
 library(readr)
-# 
+library(stringr)
+setwd("~/work/Applied-statistical-learning")
 
 load_meps_zip <- function(urls, zipnames, objnames, outdir = "meps_data") {
   
@@ -70,268 +71,138 @@ local <- c(
   "meps_data/h239g/h239gdta.zip",
   "meps_data/h239h/h239hdta.zip"
 )
-  for (i in seq_along(local)) {
-    url      <- urls[i]
-    zipfile  <- file.path("meps_data", zipnames[i])
-    objname  <- objnames[i]
-    
-    #  Décompression et extraction du fichier .dta
-    unzip_dir <- file.path("meps_data", tools::file_path_sans_ext(zipnames[i]))
-    dir.create(unzip_dir, showWarnings = FALSE)
-    unzip(zipfile, exdir = unzip_dir)
-    dta_file <- list.files(unzip_dir, pattern = "\\.dta$", full.names = TRUE)
-    
-    # Nous téléchargeons le fichier .dta et le renommons
-    assign(objname, read_dta(dta_file), envir = .GlobalEnv)
-  }
+for (i in seq_along(local)) {
+  url      <- urls[i]
+  zipfile  <- file.path("meps_data", zipnames[i])
+  objname  <- objnames[i]
+  
+  #  Décompression et extraction du fichier .dta
+  unzip_dir <- file.path("meps_data", tools::file_path_sans_ext(zipnames[i]))
+  dir.create(unzip_dir, showWarnings = FALSE)
+  unzip(zipfile, exdir = unzip_dir)
+  dta_file <- list.files(unzip_dir, pattern = "\\.dta$", full.names = TRUE)
+  
+  # Nous téléchargeons le fichier .dta et le renommons
+  assign(objname, read_dta(dta_file), envir = .GlobalEnv)
+}
 
+# ==============================================================================
+# 1. DÉFINITION DES FONCTIONS D'AGRÉGATION (AU NIVEAU MENSUEL)
+# ==============================================================================
 
-# Nous agrégeons les dépenses pour chaque individu et pour chaque mois
-# dans les fichiers détaillant les dépenses par poste de façon à obtenir
-# - les dépenses mensuelles de chaque individu par poste
-#(variables de type exp_poste_1, exp_poste2... pour le poste "poste")
-# - une variable détaillant la dépense totale en 2022 pour ce poste pour chaque
-# individu (variable exp_poste_total)
-
-# Les cinq premiers fichiers sont traités de façon analogue
-library(dplyr)
-library(tidyr)
-
-# Fonction générique pour agréger les dépenses par saison
-aggregate_by_season <- function(data, date_col, exp_col, prefix) {
-  # Nom des df et colonnes
+# A. Fonction générique : Agrégation Mensuelle (retourne colonnes _1 à _12)
+aggregate_monthly <- function(data, date_col, exp_col, prefix) {
   date_col_sym <- sym(date_col)
   exp_col_sym <- sym(exp_col)
   total_col_name <- paste0(prefix, "total")
   
   result <- data %>%
-    #nous créons une variable de saison
-    mutate(
-      SAISON = case_when(
-        !!date_col_sym %in% c(1, 2, 3) ~ "winter",
-        !!date_col_sym %in% c(4, 5, 6) ~ "spring",
-        !!date_col_sym %in% c(7, 8, 9) ~ "summer",
-        !!date_col_sym %in% c(10, 11, 12) ~ "fall",
-        TRUE ~ NA_character_
-      )
-    ) %>%
-    #nous sommons les dépenses par saison et par individu
-    group_by(DUPERSID, SAISON) %>%
-    summarise(
-      exp_saison = sum(!!exp_col_sym, na.rm = TRUE),
-      .groups = "drop"
-    ) %>%
-    # Nous créons une colonne de dépense par saison
+    group_by(DUPERSID, month = !!date_col_sym) %>%
+    summarise(exp_month = sum(!!exp_col_sym, na.rm = TRUE), .groups = "drop") %>%
+    # Pivot pour avoir une colonne par mois (1 à 12)
     pivot_wider(
-      names_from = SAISON,
-      values_from = exp_saison,
-      names_prefix = prefix,
-      values_fill = 0 # on remplace les NA (dépense nulle dans une saison) par 0
-    ) %>%
-    # Nous ajoutons la somme annuelle
+      names_from = month,
+      values_from = exp_month,
+      names_prefix = paste0(prefix, ""), # donnera prefix_1, prefix_2...
+      values_fill = 0
+    )
+  
+  # On s'assure que toutes les colonnes mois (1-12) existent, même si pas de données
+  for(m in 1:12) {
+    col_name <- paste0(prefix, m)
+    if(!col_name %in% names(result)) {
+      result[[col_name]] <- 0
+    }
+  }
+  
+  # Calcul du total annuel pour vérification
+  result <- result %>%
     rowwise() %>%
-    mutate(
-      !!total_col_name := sum(c_across(starts_with(prefix)), na.rm = TRUE)
-    ) %>%
+    mutate(!!total_col_name := sum(c_across(matches(paste0("^", prefix, "[0-9]+$"))), na.rm = TRUE)) %>%
     ungroup()
   
   return(result)
 }
 
-
-# Dépenses dentaires
-agg_dental <- aggregate_by_season(
-  data = dental_2022,
-  date_col = "DVDATEMM",
-  exp_col = "DVXP22X",
-  prefix = "exp_dental_"
-)
-
-# Dépenses des visites externes
-agg_outpatient <- aggregate_by_season(
-  data = outpatients_visits_2022,
-  date_col = "OPDATEMM",
-  exp_col = "OPXP22X",
-  prefix = "exp_outpatient_"
-)
-
-# Dépenses des cabinets médicaux
-agg_office <- aggregate_by_season(
-  data = Office_Based_Medical_Provider_2022,
-  date_col = "OBDATEMM",
-  exp_col = "OBXP22X",
-  prefix = "exp_office_"
-)
-
-# Dépenses des urgences
-agg_er <- aggregate_by_season(
-  data = emergency_room_2022,
-  date_col = "ERDATEMM",
-  exp_col = "ERXP22X",
-  prefix = "exp_er_"
-)
-
-# Dépenses de soins à domicile
-agg_home <- aggregate_by_season(
-  data = home_health_2022,
-  date_col = "HHDATEMM",
-  exp_col = "HHXP22X",
-  prefix = "exp_home_"
-)
-
-# Other ----
-seasons_list <- c("winter", "spring", "summer", "fall")
-
-
-
-aggregate_uniform_seasonal <- function(data, exp_col, prefix) {
-  # Nom des df et colonnes
+# B. Fonction Uniforme : Répartition sur 12 mois
+aggregate_uniform_monthly <- function(data, exp_col, prefix) {
   exp_col_sym <- sym(exp_col)
   total_col_name <- paste0(prefix, "total")
   
-  seasons_list <- c("winter", "spring", "summer", "fall")
-  
-  seasonal_data <- data %>%
-    # on calcule la dépense pour chaque saison
-    mutate(exp_seasonal = !!exp_col_sym / 4) %>%
-    # Création de 4 lignes par individu (une pour chaque saison)
-    tidyr::crossing(SAISON = seasons_list) %>%
-    group_by(DUPERSID, SAISON) %>%
-    summarise(
-      # Somme de la dépense saisonnière calculée
-      exp_final = sum(exp_seasonal, na.rm = TRUE), 
-      .groups = "drop"
-    )
-  
-  
-  
-  # Calcul de la dépense par saison et la dépense totale pour chaque individu
-  agg_data <- seasonal_data %>%
+  monthly_data <- data %>%
+    mutate(exp_monthly_val = !!exp_col_sym / 12) %>%
+    tidyr::crossing(month = 1:12) %>%
+    group_by(DUPERSID, month) %>%
+    summarise(exp_final = sum(exp_monthly_val, na.rm = TRUE), .groups = "drop") %>%
     pivot_wider(
-      names_from = SAISON,
+      names_from = month,
       values_from = exp_final,
-      names_prefix = prefix,
+      names_prefix = paste0(prefix, ""),
       values_fill = 0
     ) %>%
     rowwise() %>%
-    mutate(
-      !!total_col_name := sum(c_across(starts_with(prefix)), na.rm = TRUE)
-    ) %>%
+    mutate(!!total_col_name := sum(c_across(matches(paste0("^", prefix, "[0-9]+$"))), na.rm = TRUE)) %>%
     ungroup()
   
-  return(agg_data)
+  return(monthly_data)
 }
 
-# Traitement du fichier 'medicines'
-agg_medicines <- aggregate_uniform_seasonal(
-  data = prescribed_medicines_2022,
-  exp_col = "RXXP22X",
-  prefix = "exp_medicines_"
-)
+# ==============================================================================
+# 2. TRAITEMENT DES FICHIERS (GENERATION MENSUELLE)
+# ==============================================================================
 
-# Traitement du fichier 'others'
-agg_others <- aggregate_uniform_seasonal(
-  data = others_2022,
-  exp_col = "OMXP22X",
-  prefix = "exp_others_"
-)
+# --- Traitement Standard ---
+agg_dental <- aggregate_monthly(dental_2022, "DVDATEMM", "DVXP22X", "exp_dental_")
+agg_outpatient <- aggregate_monthly(outpatients_visits_2022, "OPDATEMM", "OPXP22X", "exp_outpatient_")
+agg_office <- aggregate_monthly(Office_Based_Medical_Provider_2022, "OBDATEMM", "OBXP22X", "exp_office_")
+agg_er <- aggregate_monthly(emergency_room_2022, "ERDATEMM", "ERXP22X", "exp_er_")
+agg_home <- aggregate_monthly(home_health_2022, "HHDATEMM", "HHXP22X", "exp_home_")
 
+# --- Traitement Uniforme ---
+agg_medicines <- aggregate_uniform_monthly(prescribed_medicines_2022, "RXXP22X", "exp_medicines_")
+agg_others <- aggregate_uniform_monthly(others_2022, "OMXP22X", "exp_others_")
 
-#Hospital ----
-# Fonction utilitaire pour mapper le mois à la saison
-get_saison_from_month <- function(month) {
-  case_when(
-    month %in% c(1, 2, 3) ~ "winter",
-    month %in% c(4, 5, 6) ~ "spring",
-    month %in% c(7, 8, 9) ~ "summer",
-    month %in% c(10, 11, 12) ~ "fall",
-    TRUE ~ NA_character_
-  )
-}
-
-
-
+# --- Traitement Hospital (Spécial) ---
+# On reprend votre logique mensuelle intacte
 hospitals_monthly <- hospitals_2022 %>%
-  #On supprime les lignes pour lesquelles la date de fin d'hospitalisation n'est pas connue
   filter(IPENDMM != -8) %>%
-  # Calcul du nombre de mois d'hospitalisation selon l'année de début
   mutate(
-    n_months = case_when(
-      IPBEGYR == 2022 ~ IPENDMM - IPBEGMM + 1,
-      IPBEGYR == 2021 ~ (12 - IPBEGMM + 1) + IPENDMM,
-      TRUE ~ NA_real_
-    ),
-    #Calcul de la dépense mensuelle
+    n_months = case_when(IPBEGYR == 2022 ~ IPENDMM - IPBEGMM + 1, IPBEGYR == 2021 ~ (12 - IPBEGMM + 1) + IPENDMM, TRUE ~ NA_real_),
     exp_hospitals_month = IPXP22X / n_months
   ) %>%
   rowwise() %>%
-  #Liste des mois concernés par l'hospitalisation
-  mutate(
-    month = case_when(
-      IPBEGYR == 2022 ~ list(seq(IPBEGMM, IPENDMM)),
-      IPBEGYR == 2021 ~ list(seq(1, IPENDMM)), 
-      TRUE ~ list(NA_integer_)
-    )
-  ) %>%
+  mutate(month = case_when(IPBEGYR == 2022 ~ list(seq(IPBEGMM, IPENDMM)), IPBEGYR == 2021 ~ list(seq(1, IPENDMM)), TRUE ~ list(NA_integer_))) %>%
   unnest(month) %>%
   ungroup() %>%
-  # Création de la variable SAISON à partir du mois
-  mutate(SAISON = get_saison_from_month(month))
+  group_by(DUPERSID, month) %>%
+  summarise(exp_hospitals = sum(exp_hospitals_month), .groups = "drop") %>%
+  complete(DUPERSID, month = 1:12, fill = list(exp_hospitals = 0))
 
-# Agrégation des dépenses mensuelles en dépenses saisonnières (pour 2022)
-hospitals_seasonal <- hospitals_monthly %>%
-  group_by(DUPERSID, SAISON) %>%
-  # On somme toutes les contributions mensuelles de chaque saison
-  summarise(exp_hospitals = sum(exp_hospitals_month, na.rm = TRUE), .groups = "drop") %>%
-  # On complète le dataframe pour s'assurer que toutes les 4 saisons sont présentes (avec 0 si aucune dépense)
-  complete(DUPERSID, SAISON = c("winter", "spring", "summer", "fall"), fill = list(exp_hospitals = 0))
+# Gestion Hospital 2021 pour cohérence
+exp_2021 <- hospitals_2022 %>%
+  filter(IPENDMM != -8, IPBEGYR == 2021) %>%
+  mutate(n_months = (12 - IPBEGMM + 1) + IPENDMM, exp_hospitals_2021 = (IPXP22X / n_months) * (12 - IPBEGMM + 1)) %>%
+  group_by(DUPERSID) %>%
+  summarise(exp_hospitals_2021_total = sum(exp_hospitals_2021))
 
-# Création de la dépense agrégée finale par saison 
-agg_hospital <- hospitals_seasonal %>%
-  pivot_wider(
-    names_from = SAISON,
-    values_from = exp_hospitals,
-    names_prefix = "exp_hospitals_",
-    values_fill = 0 
-  ) %>%
+agg_hospital <- hospitals_monthly %>%
+  pivot_wider(names_from = month, values_from = exp_hospitals, names_prefix = "exp_hospitals_", values_fill = 0) %>%
   rowwise() %>%
-  # Total de la dépense imputée à 2022
-  mutate(
-    exp_hospitals_2022_total = sum(
-      c_across(starts_with("exp_hospitals_")),
-      na.rm = TRUE
-    )
-  ) %>%
-  ungroup()
+  mutate(exp_hospitals_2022_total = sum(c_across(matches("^exp_hospitals_[0-9]+$")), na.rm = TRUE)) %>%
+  ungroup() %>%
+  left_join(exp_2021, by = "DUPERSID")
 
+# ==============================================================================
+# 3. JOINTURES ET NETTOYAGE
+# ==============================================================================
 
+ids_removed <- hospitals_2022 %>% filter(IPENDMM == -8 ) %>% pull(DUPERSID)
 
-
-
-
-
-
-
-
-#  Join ----
-# Les variables précédemment créées détaillant les dépenses agrégées par poste
-# pour chaque individu sont jointes aux fichiers full_year_2022 et longitudinal
-# pour inclure certaines caractéristiques socio-démographiques et économiques à l'étude.
-
-# DUPERSID présents dans hospitals_2022 mais supprimés dans agg_hospitals
-# (du fait de l'absence de l'information sur la durée d'hospitalisation)
-ids_removed <- hospitals_2022 %>%
-  filter(IPENDMM == -8 ) %>%
-  pull(DUPERSID)
-
-
-# CRéation du dataframe avec l'ensemble des dépenses mensuelles par postes
-# et les caractéristiques socio-démographiques et économiques
 all_expenses <- full_year_2022 %>%
   filter(!DUPERSID %in% ids_removed)  %>%
-  select(DUPERSID,  EDUCYR,  TTLP22X, FAMINC22, AGE22X, TOTEXP22  ) %>%
+  select(DUPERSID,  EDUCYR,  TTLP22X, FAMINC22, AGE22X, TOTEXP22 ) %>%
   left_join(full_year_2023 %>% select(DUPERSID,  TOTEXP23), by= "DUPERSID") %>%
-  left_join(longitudinal %>% select(DUPERSID), by= "DUPERSID")%>%
+  left_join(longitudinal %>% select(DUPERSID), by= "DUPERSID") %>%
   left_join(agg_dental, by="DUPERSID") %>%
   left_join(agg_hospital, by="DUPERSID") %>%
   left_join(agg_outpatient, by="DUPERSID") %>%
@@ -341,151 +212,91 @@ all_expenses <- full_year_2022 %>%
   left_join(agg_others, by="DUPERSID") %>%
   left_join(agg_medicines, by="DUPERSID")
 
-
-# Ajout de variables ----
-# Agrégation des dépenses totales par saison ---
-# Nous créons des variables dépenses totales saisonnières (dep_winter, dep_spring...)
-# en sommant toutes les sous-catégories (dental, hospital, etc.) pour chaque saison.
-
-all_expenses <- all_expenses %>%
-  rowwise() %>%
-  mutate(
-    # On utilise matches pour attraper tout ce qui finit par _winter, etc.
-    dep_winter = sum(c_across(matches("_winter$")), na.rm = TRUE),
-    dep_spring = sum(c_across(matches("_spring$")), na.rm = TRUE),
-    dep_summer = sum(c_across(matches("_summer$")), na.rm = TRUE),
-    dep_fall   = sum(c_across(matches("_fall$")), na.rm = TRUE)
-  ) %>%
-  ungroup()
-
-# Liste des variables de dépenses saisonnières pour utilisation ultérieure
-dep_seasons <- c("dep_winter", "dep_spring", "dep_summer", "dep_fall")
-
-
-# Nous créons d'autres variables utiles pour notre étude :
-# - Les dépenses des 2 dernières saisons (été + automne, équivalent 6 mois)
-# - Nombre de saisons où la dépense est supérieure à la moyenne saisonnière
-# - Variable tendance (pente de la régression sur les 4 saisons)
-# - Variable ep_aigue (pic de dépense)
-
-all_expenses <- all_expenses %>%
-  rowwise() %>%
-  mutate(
-    
-    # Dépenses des 2 dernières saisons (Summer + Fall) ~ équivalent des "6 derniers mois"
-    dep_last_2_seasons = sum(dep_summer, dep_fall, na.rm = TRUE),
-    
-    # Dépenses de la dernière saison (Fall) ~ indicateur le plus récent
-    dep_last_season = dep_fall,
-    
-    # calcul du nombre de saisons dont la dépense dépasse la moyenne saisonnière (Total / 4)
-    nbre_au_dessus_moyenne = sum(c_across(all_of(dep_seasons)) > (TOTEXP22 / 4), na.rm = TRUE),
-    
-    # Dépense saisonnière maximale
-    dep_max = max(c_across(all_of(dep_seasons)), na.rm = TRUE),
-    
-    # Création d'une variable tendance obtenue en ajustant une droite sur les 4 saisons
-    # Si la pente est positive, les dépenses accélèrent en fin d'année.
-    tendance = {
-      # x = temps (1=Hiver, 2=Printemps, 3=Eté, 4=Automne)
-      temps <- 1:4
-      dep_saisonnieres <- c(dep_winter, dep_spring, dep_summer, dep_fall)
-      
-      # Calcul de la pente (coefficients[2]) de la régression linéaire
-      # On gère le cas où toutes les dépenses sont 0 pour éviter les erreurs
-      if(all(dep_saisonnieres == 0)) 0 else lm(dep_saisonnieres ~ temps)$coefficients[2]
-    },
-    
-    # Indique si la dépense saisonnière la plus élevée est "anormalement" haute.
-    # Un facteur 2.5 par rapport à la moyenne saisonnière est un bon indicateur de choc.
-    ep_aigue = if_else(dep_max > 2.5 * (TOTEXP22 / 4), 1, 0)
-    
-  ) %>%
-  ungroup()
-
-
-# Etude des valeurs négatives ----
-table(all_expenses$EDUCYR)
-na_educ <- all_expenses %>% filter(EDUCYR <0)
-table(na_educ$AGE22X)
-# Il semblerait que cela soit des jeunes
-young <- all_expenses %>% filter(0<= AGE22X & AGE22X < 9)
-table(young$AGE22X)
-young_educ <- young %>% filter(EDUCYR>=0)
-table(young_educ$AGE22X)
-
-
-all_expenses_clean <- all_expenses %>% mutate(
-  EDUCYR = ifelse( EDUCYR <0, 0, EDUCYR)
-)
-
-library(ggplot2)
-plot_data <- all_expenses %>%
-  mutate(
-    EDUCYR_status = case_when(
-      EDUCYR < 0 ~ "EDUCYR Négatif/Inconnu",
-      EDUCYR == 0 ~ "EDUCYR = 0 (Aucune éducation)",
-      EDUCYR > 0 ~ "EDUCYR Positif",
-      TRUE ~ "NA"
-    ),
-    Age_Group = ifelse(AGE22X < 9, "Très Jeune (0-8 ans)", "Adultes et Enfants (9+ ans)")
-  ) %>%
-  # On filtre pour les groupes pertinents
-  filter(EDUCYR_status != "NA")
-
-density_data <- all_expenses %>%
-  # Limiter l'analyse aux individus de moins de 18 ans
-  filter(AGE22X < 18) %>% 
-  mutate(
-    EDUCYR_status = ifelse(EDUCYR < 0, "EDUCYR Négatif/Inconnu", "EDUCYR Non-Négatif (>= 0)")
-  )
-
-
-# Graphique de densité pour comparer les distributions d'âge
-ggplot(density_data, aes(x = AGE22X, fill = EDUCYR_status)) +
-  geom_density(alpha = 0.5, adjust = 1) + # adjust=1 pour lisser l'estimation de densité
-  scale_fill_manual(values = c("EDUCYR Négatif/Inconnu" = "#E41A1C", 
-                               "EDUCYR Non-Négatif (>= 0)" = "#377EB8")) +
-  labs(
-    title = "Comparaison de la Distribution d'Âge (Moins de 18 ans)",
-    subtitle = "EDUCYR Négatif (Cas à imputer à 0) vs. EDUCYR Non-Négatif",
-    x = "Âge en 2022 (AGE22X)",
-    y = "Densité",
-    fill = "Statut de EDUCYR"
-  ) +
-  theme_minimal()
-
-
-
-cat("\n Nombre de lignes total \n")
-print(nrow(all_expenses_clean))
-cat("\n Nombre de lignes avec revenu négatif \n")
-print(nrow(all_expenses_clean %>% filter(TTLP22X <0 | FAMINC22 <0)))
-cat("\n Nombre de lignes sans donnée d'âge \n")
-print(nrow(all_expenses_clean %>% filter(AGE22X <0)))
-
-
-all_expenses_clean <- all_expenses_clean %>% 
+# Nettoyage NA et Négatifs
+all_expenses_clean <- all_expenses %>% 
+  mutate(EDUCYR = ifelse(EDUCYR < 0, 0, EDUCYR)) %>%
   filter(TTLP22X >=0 & FAMINC22 >=0 & AGE22X >=0)
 
-
-# On met des 0 aux dépenses NA ou négatives (pour les dépenses home)
-library(stringr)
-all_expense_cols <- names(all_expenses_clean) %>% 
-  str_subset("^exp_")
-home_expense_cols <- names(all_expenses_clean) %>% 
-  str_subset("^exp_home")
-dep_cols <- names(all_expenses_clean) %>% 
-  str_subset("^dep")
+all_expense_cols <- names(all_expenses_clean) %>% str_subset("^exp_")
+home_expense_cols <- names(all_expenses_clean) %>% str_subset("^exp_home")
 
 all_expenses_clean <- all_expenses_clean %>%
   mutate(across(all_of(all_expense_cols), ~ replace_na(.x, 0))) %>% 
   mutate(TOTEXP23 = replace_na(TOTEXP23, 0)) %>% 
-  mutate(across(all_of(home_expense_cols), ~ pmax(.x, 0))) %>% 
-  mutate(across(all_of(dep_cols), ~ pmax(.x, 0)))
+  mutate(across(all_of(home_expense_cols), ~ pmax(.x, 0)))
 
+# ==============================================================================
+# 4. CALCUL DES INDICATEURS MENSUELS (TENDANCE, PIC)
+# ==============================================================================
 
-summary(all_expenses_clean)
+# 1. Création des variables dépenses totales mensuelles (Globales)
+# On somme toutes les catégories (dental_1 + hospital_1 + ...) pour avoir dep_janvier
+all_expenses_clean <- all_expenses_clean %>%
+  rowwise() %>%
+  mutate(
+    dep_1  = sum(c_across(ends_with("_1")), na.rm = TRUE),
+    dep_2  = sum(c_across(ends_with("_2")), na.rm = TRUE),
+    dep_3  = sum(c_across(ends_with("_3")), na.rm = TRUE),
+    dep_4  = sum(c_across(ends_with("_4")), na.rm = TRUE),
+    dep_5  = sum(c_across(ends_with("_5")), na.rm = TRUE),
+    dep_6  = sum(c_across(ends_with("_6")), na.rm = TRUE),
+    dep_7  = sum(c_across(ends_with("_7")), na.rm = TRUE),
+    dep_8  = sum(c_across(ends_with("_8")), na.rm = TRUE),
+    dep_9  = sum(c_across(ends_with("_9")), na.rm = TRUE),
+    dep_10 = sum(c_across(ends_with("_10")), na.rm = TRUE),
+    dep_11 = sum(c_across(ends_with("_11")), na.rm = TRUE),
+    dep_12 = sum(c_across(ends_with("_12")), na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+# Liste des mois pour les itérations
+monthly_cols <- paste0("dep_", 1:12)
+
+# 2. Calcul des indicateurs complexes
+all_expenses_clean <- all_expenses_clean %>%
+  rowwise() %>%
+  mutate(
+    # A. Nombre de mois au-dessus de la moyenne mensuelle
+    nbre_au_dessus_moyenne = sum(c_across(all_of(monthly_cols)) > (TOTEXP22 / 12), na.rm = TRUE),
+    
+    # B. Tendance sur les 3 derniers mois (Oct, Nov, Dec => 1, 2, 3)
+    tendance = {
+      mois_q4 <- 1:3
+      vals_q4 <- c(dep_10, dep_11, dep_12)
+      if(all(vals_q4 == 0)) 0 else lm(vals_q4 ~ mois_q4)$coefficients[2]
+    },
+    
+    # C. Épisode Aigu (Basé sur le Max mensuel)
+    dep_max_mensuel = max(c_across(all_of(monthly_cols)), na.rm = TRUE),
+    ep_aigue = if_else(dep_max_mensuel > 5 * (TOTEXP22 / 12), 1, 0)
+  ) %>%
+  ungroup()
+
+# ==============================================================================
+# 5. AGRÉGATION FINALE PAR SAISON (POUR RÉDUIRE LA DIMENSION)
+# ==============================================================================
+# Maintenant que les indicateurs fins sont calculés, on regroupe en saisons
+# Hiver: 1,2,3 | Printemps: 4,5,6 | Eté: 7,8,9 | Automne: 10,11,12
+
+all_expenses_clean <- all_expenses_clean %>%
+  mutate(
+    dep_winter = dep_1 + dep_2 + dep_3,
+    dep_spring = dep_4 + dep_5 + dep_6,
+    dep_summer = dep_7 + dep_8 + dep_9,
+    dep_fall   = dep_10 + dep_11 + dep_12,
+    
+    # Dépense 6 derniers mois (Eté + Automne)
+    dep_last_6_months = dep_summer + dep_fall
+  ) %>%
+  # NETTOYAGE : On supprime les colonnes mensuelles intermédiaires pour alléger
+  select(
+    -matches("^dep_[0-9]+$"), # Supprime dep_1 à dep_12
+    -matches("_(1|2|3|4|5|6|7|8|9|10|11|12)$") # Supprime les colonnes sources exp_..._1
+  )
+
+# Affichage résultat
+print(head(all_expenses_clean %>% select(starts_with("dep_"), tendance, ep_aigue)))
+
 
 
 
